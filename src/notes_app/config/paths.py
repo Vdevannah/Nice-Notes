@@ -14,7 +14,7 @@ def get_notes_home_directory():
 def ensure_notes_directory_exists():
     """Make sure the notes directory exists on disk, creating it if needed."""
     notes_home = get_notes_home_directory()
-    notes_home.mkdir(parents=True, exist_ok=True)
+    (notes_home / "notes").mkdir(parents=True, exist_ok=True)
     return notes_home
 
 def get_absolute_path_to_notes_home():
@@ -26,4 +26,4 @@ def get_absolute_path_to_notes_home():
 def build_note_file_path(note_filename):
     """Return the full path to a specific note file, given just its filename."""
     notes_home = get_absolute_path_to_notes_home()
-    return notes_home / note_filename
+    return notes_home / "notes" / note_filename
