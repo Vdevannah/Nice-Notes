@@ -1,52 +1,133 @@
-import yaml
+
 from datetime import datetime
 from src.notes_app.notes.models import Note
+from src.notes_app.notes.validation import is_valid_note
 from src.notes_app.config.paths import build_note_file_path, ensure_notes_directory_exists
 
 
-def serialize_note(note):
-    """Convert a Note object into YAML front matter + Markdown text."""
-    metadata = {
-        "title": note.title,
-        "author": note.author,
-        "created": note.created.isoformat(),
-        "modified": note.modified.isoformat(),
-        "tags": note.tags,
-    }
-    yaml_block = yaml.dump(metadata, default_flow_style=False, sort_keys=False)
-    return f"---\n{yaml_block}---\n\n{note.content}"
+def format_note_for_file(note):
+    """Convert a Note into YAML front matter + Markdown text, built manually."""
+    output = "---\n"
+    output += f"title: {note.title}\n"
+    output += f"created: {note.created.isoformat()}\n"
+    output += f"modified: {note.modified.isoformat()}\n"
+
+    if note.tags:
+        output += f"tags: [{', '.join(note.tags)}]\n"
+
+    if getattr(note, "author", None):
+        output += f"author: {note.author}\n"
+    if getattr(note, "status", None):
+        output += f"status: {note.status}\n"
+    if getattr(note, "priority", None):
+        output += f"priority: {note.priority}\n"
+
+    output += "---\n\n"
+    output += note.content
+    return output
 
 
-def parse_note_file(file_path):
-    """Read a note file from disk and turn it back into a Note object."""
-    with open(file_path, "r", encoding="utf-8") as f:
-        text = f.read()
+def parse_yaml_header(file_content):
+    """Split a note file's text into (metadata dict, content string)."""
+    if not file_content.startswith("---"):
+        raise ValueError("Invalid note format: missing YAML header")
 
-    parts = text.split("---", 2)
-    yaml_block = parts[1]
-    body = parts[2].strip()
+    lines = file_content.split("\n")
 
-    metadata = yaml.safe_load(yaml_block)
+    yaml_end_index = -1
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            yaml_end_index = i
+            break
 
-    return Note(
+    if yaml_end_index == -1:
+        raise ValueError("Invalid note format: YAML header not closed")
+
+    yaml_lines = lines[1:yaml_end_index]
+    metadata = {}
+    for line in yaml_lines:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key == "tags":
+            value = value.strip("[]")
+            metadata[key] = [t.strip() for t in value.split(",") if t.strip()]
+        else:
+            metadata[key] = value
+
+    content_lines = lines[yaml_end_index + 1:]
+    content = "\n".join(content_lines).strip()
+
+    return metadata, content
+
+
+def save_note(note):
+    """Validate, format, and write a Note to disk. Returns the file path."""
+    if not is_valid_note(note):
+        raise ValueError("Invalid note")
+
+    ensure_notes_directory_exists()
+    filename = note.generate_filename()
+    full_path = build_note_file_path(filename)
+    full_path.write_text(format_note_for_file(note), encoding="utf-8")
+    return full_path
+
+
+def load_note(file_path):
+    """Read a note file from disk and reconstruct a Note object."""
+    if not file_path.exists():
+        raise FileNotFoundError(f"Note file not found: {file_path}")
+
+    file_content = file_path.read_text(encoding="utf-8")
+    metadata, content = parse_yaml_header(file_content)
+
+    note = Note(
         title=metadata["title"],
-        author=metadata["author"],
-        content=body,
+        author=metadata.get("author", "unknown"),
+        content=content,
         tags=metadata.get("tags", []),
         created=datetime.fromisoformat(metadata["created"]),
         modified=datetime.fromisoformat(metadata["modified"]),
     )
+    return note
 
 
-def save_note(note):
-    """Write a Note to disk using its generated filename. Returns the file path."""
-    ensure_notes_directory_exists()
-    filename = note.generate_filename()
-    file_path = build_note_file_path(filename)
-    file_path.write_text(serialize_note(note), encoding="utf-8")
-    return file_path
+def update_note(file_path, title=None, author=None, content=None, tags=None):
+    """Load a note, change only the fields provided, save it back in place."""
+    note = load_note(file_path)
+
+    if title is not None:
+        note.title = title
+    if author is not None:
+        note.author = author
+    if content is not None:
+        note.content = content
+    if tags is not None:
+        note.tags = tags
+
+    note.modified = datetime.now()
+    file_path.write_text(format_note_for_file(note), encoding="utf-8")
+    return note
 
 
-def load_note(file_path):
-    """Load a Note from a given file path."""
-    return parse_note_file(file_path)
+def delete_note(file_path):
+    """Delete a note file from disk. Returns True if deleted, False if it didn't exist."""
+    if not file_path.exists():
+        return False
+    file_path.unlink()
+    return True
+
+
+def list_all_notes(base_dir):
+    """Return a list of (file_path, Note) tuples for every note in the notes folder."""
+    notes_dir = base_dir / "notes"
+    if not notes_dir.exists():
+        return []
+
+    results = []
+    for path in sorted(notes_dir.glob("*.md")):
+        note = load_note(path)
+        results.append((path, note))
+    return results
