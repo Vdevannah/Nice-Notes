@@ -131,3 +131,41 @@ def list_all_notes(base_dir):
         note = load_note(path)
         results.append((path, note))
     return results
+
+def search_notes_by_keyword(base_dir, keyword):
+    """Search notes by keyword in title or content (case-insensitive)."""
+    all_notes = list_all_notes(base_dir)
+    matching_notes = []
+
+    for file_path, note in all_notes:
+        if keyword.lower() in note.title.lower():
+            matching_notes.append((file_path, note))
+        elif keyword.lower() in note.content.lower():
+            matching_notes.append((file_path, note))
+
+    return matching_notes
+
+
+def filter_notes_by_tag(base_dir, tag):
+    """Filter notes by tag (case-insensitive)."""
+    all_notes = list_all_notes(base_dir)
+    matching_notes = []
+
+    for file_path, note in all_notes:
+        note_tags_lower = [t.lower() for t in note.tags]
+        if tag.lower() in note_tags_lower:
+            matching_notes.append((file_path, note))
+
+    return matching_notes
+
+
+def get_all_tags(base_dir):
+    """Return a sorted list of every unique tag across all notes."""
+    all_notes = list_all_notes(base_dir)
+    all_tags = set()
+
+    for _, note in all_notes:
+        for tag in note.tags:
+            all_tags.add(tag)
+
+    return sorted(all_tags)

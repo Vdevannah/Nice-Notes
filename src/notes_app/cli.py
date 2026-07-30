@@ -1,7 +1,10 @@
 import sys
 from datetime import datetime
 from src.notes_app.notes.models import Note
-from src.notes_app.notes.storage import save_note, load_note, update_note as _update_note, delete_note as _delete_note
+from src.notes_app.notes.storage import (
+    save_note, load_note, update_note as _update_note, delete_note as _delete_note,
+    search_notes_by_keyword, filter_notes_by_tag, get_all_tags,
+)
 from src.notes_app.config.paths import get_absolute_path_to_notes_home, build_note_file_path
 
 
@@ -30,6 +33,33 @@ def list_all_notes():
     note_files = list(notes_dir.glob("*.md"))
     note_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return note_files
+
+
+def find_note_by_partial_name(partial):
+    """
+    Find a note whose filename or title contains the given partial text
+    (case-insensitive). Returns the matching Path, or None if there's no
+    match or more than one match (printing a message either way).
+    """
+    partial_lower = partial.lower()
+    matches = []
+
+    for path in list_all_notes():
+        note = load_note(path)
+        if partial_lower in path.name.lower() or partial_lower in note.title.lower():
+            matches.append(path)
+
+    if len(matches) == 0:
+        print(f"No note found matching '{partial}'", file=sys.stderr)
+        return None
+
+    if len(matches) > 1:
+        print(f"Multiple notes match '{partial}', please be more specific:", file=sys.stderr)
+        for path in matches:
+            print(f"  {path.name}", file=sys.stderr)
+        return None
+
+    return matches[0]
 
 
 def display_notes_list(note_files):
@@ -106,6 +136,19 @@ def delete_note(filename):
         print("Deletion cancelled.")
 
 
+def display_search_results(results, keyword):
+    """Print search results for a keyword search."""
+    if not results:
+        print(f"No notes found containing '{keyword}'")
+        return
+
+    print(f"Found {len(results)} note(s) containing '{keyword}':")
+    print()
+
+    for file_path, note in results:
+        print(f"{file_path.name}: {note.title}")
+
+
 def show_help():
     print("""
 Nice Notes Manager
@@ -116,9 +159,12 @@ Available commands:
   help                       - Display this help information
   create                     - Create a new note (prompts for title, content)
   list                       - List all notes
-  read <filename>            - Display a specific note
-  update <filename>          - Update a note's content
-  delete <filename>          - Delete a note (asks for confirmation)
+  read <name>                - Display a specific note (partial name/title match)
+  update <name>               - Update a note's content (partial name/title match)
+  delete <name>               - Delete a note (partial name/title match)
+  search <keyword>           - Search notes by keyword in title/content
+  tag <tagname>               - List notes with a specific tag
+  tags                        - List all tags used across notes
     """.strip())
 
 
@@ -136,29 +182,70 @@ def main():
     elif command == "create":
         title = input("Enter note title: ").strip()
         content = input("Enter note content: ").strip()
-        create_note(title, content)
+        tags_input = input("Enter tags (comma-separated, or leave blank): ").strip()
+        tags = [t.strip() for t in tags_input.split(",") if t.strip()] if tags_input else None
+        create_note(title, content, tags=tags)
 
     elif command == "list":
         display_notes_list(list_all_notes())
 
     elif command == "read":
         if len(sys.argv) < 3:
-            print("Error: Missing filename. Usage: cli.py read <filename>", file=sys.stderr)
+            print("Error: Missing name. Usage: cli.py read <name>", file=sys.stderr)
             sys.exit(1)
-        read_note_by_filename(sys.argv[2])
+        match = find_note_by_partial_name(sys.argv[2])
+        if match is not None:
+            read_note_by_filename(match.name)
 
     elif command == "update":
         if len(sys.argv) < 3:
-            print("Error: Missing filename. Usage: cli.py update <filename>", file=sys.stderr)
+            print("Error: Missing name. Usage: cli.py update <name>", file=sys.stderr)
             sys.exit(1)
-        new_content = input("Enter new content: ").strip()
-        update_note(sys.argv[2], new_content=new_content)
+        match = find_note_by_partial_name(sys.argv[2])
+        if match is not None:
+            new_content = input("Enter new content: ").strip()
+            update_note(match.name, new_content=new_content)
 
     elif command == "delete":
         if len(sys.argv) < 3:
-            print("Error: Missing filename. Usage: cli.py delete <filename>", file=sys.stderr)
+            print("Error: Missing name. Usage: cli.py delete <name>", file=sys.stderr)
             sys.exit(1)
-        delete_note(sys.argv[2])
+        match = find_note_by_partial_name(sys.argv[2])
+        if match is not None:
+            delete_note(match.name)
+
+    elif command == "search":
+        if len(sys.argv) < 3:
+            print("Error: Missing keyword. Usage: cli.py search <keyword>", file=sys.stderr)
+            sys.exit(1)
+        keyword = sys.argv[2]
+        base_dir = get_absolute_path_to_notes_home()
+        results = search_notes_by_keyword(base_dir, keyword)
+        display_search_results(results, keyword)
+
+    elif command == "tag":
+        if len(sys.argv) < 3:
+            print("Error: Missing tag. Usage: cli.py tag <tagname>", file=sys.stderr)
+            sys.exit(1)
+        tag = sys.argv[2]
+        base_dir = get_absolute_path_to_notes_home()
+        results = filter_notes_by_tag(base_dir, tag)
+        if not results:
+            print(f"No notes tagged '{tag}'")
+        else:
+            print(f"Notes tagged '{tag}':")
+            for path, note in results:
+                print(f"  {path.name}: {note.title}")
+
+    elif command == "tags":
+        base_dir = get_absolute_path_to_notes_home()
+        all_tags = get_all_tags(base_dir)
+        if not all_tags:
+            print("No tags found.")
+        else:
+            print("All tags:")
+            for tag in all_tags:
+                print(f"  - {tag}")
 
     else:
         print(f"Error: Unknown command '{command}'", file=sys.stderr)
