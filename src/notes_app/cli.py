@@ -1,16 +1,56 @@
 import sys
+import os
+import subprocess
+import tempfile
 from datetime import datetime
 from src.notes_app.notes.models import Note
 from src.notes_app.notes.storage import (
     save_note, load_note, update_note as _update_note, delete_note as _delete_note,
     search_notes_by_keyword, filter_notes_by_tag, get_all_tags,
 )
-from src.notes_app.config.paths import get_absolute_path_to_notes_home, build_note_file_path
+from src.notes_app.config.paths import (
+    get_absolute_path_to_notes_home, build_note_file_path, ensure_notes_directory_exists,
+)
 
 
 def format_readable_date(dt):
     """Turn a datetime into a friendly readable string."""
     return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def extract_flag_value(args, flag_name):
+    """
+    Look through args for a flag like --tags or --tag, and return the
+    value right after it. Returns None if the flag isn't present.
+    """
+    if flag_name in args:
+        index = args.index(flag_name)
+        if index + 1 < len(args):
+            return args[index + 1]
+    return None
+
+
+def read_multiline_content():
+    """Read multiple lines of content until the user presses Ctrl+D (EOF)."""
+    print("Enter note content (press Ctrl+D when done):")
+    content = sys.stdin.read()
+    return content.strip()
+
+def read_content_via_editor():
+    """Open the user's editor on a temp file, then read back what they wrote."""
+    editor = os.environ.get("EDITOR", "nano")
+
+    with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf:
+        temp_path = tf.name
+
+    try:
+        subprocess.call([editor, temp_path])
+        with open(temp_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    finally:
+        os.unlink(temp_path)
+
+    return content.strip()
 
 
 def create_note(title, content, author="unknown", tags=None):
@@ -153,103 +193,150 @@ def show_help():
     print("""
 Nice Notes Manager
 
-Usage: cli.py [command]
+Usage:
+  notes create [--tags tag1,tag2]     Create a new note
+  notes list [--tag tagname]          List all notes or filter by tag
+  notes read <name>                   Display a specific note (partial match)
+  notes update <name>                 Update a note (partial match)
+  notes delete <name>                 Delete a note (partial match)
+  notes search <keyword>              Search notes by keyword
+  notes tags                          List all tags
+  notes --help                        Show this help message
 
-Available commands:
-  help                       - Display this help information
-  create                     - Create a new note (prompts for title, content)
-  list                       - List all notes
-  read <name>                - Display a specific note (partial name/title match)
-  update <name>               - Update a note's content (partial name/title match)
-  delete <name>               - Delete a note (partial name/title match)
-  search <keyword>           - Search notes by keyword in title/content
-  tag <tagname>               - List notes with a specific tag
-  tags                        - List all tags used across notes
+Environment Variables:
+  NOTES_HOME    Directory where notes are stored (default: ~/.notes)
     """.strip())
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Error: No command provided.", file=sys.stderr)
+def parse_command_line_arguments(args):
+    """Look at args and dispatch to the right command handler."""
+    if not args or args[0] == "--help":
         show_help()
-        sys.exit(1)
+        return
 
-    command = sys.argv[1].lower()
+    command = args[0].lower()
+    rest = args[1:]
 
-    if command == "help":
-        show_help()
-
-    elif command == "create":
-        title = input("Enter note title: ").strip()
-        content = input("Enter note content: ").strip()
-        tags_input = input("Enter tags (comma-separated, or leave blank): ").strip()
-        tags = [t.strip() for t in tags_input.split(",") if t.strip()] if tags_input else None
-        create_note(title, content, tags=tags)
-
+    if command == "create":
+        handle_create_command(rest)
     elif command == "list":
-        display_notes_list(list_all_notes())
-
+        handle_list_command(rest)
     elif command == "read":
-        if len(sys.argv) < 3:
-            print("Error: Missing name. Usage: cli.py read <name>", file=sys.stderr)
-            sys.exit(1)
-        match = find_note_by_partial_name(sys.argv[2])
-        if match is not None:
-            read_note_by_filename(match.name)
-
+        handle_read_command(rest)
     elif command == "update":
-        if len(sys.argv) < 3:
-            print("Error: Missing name. Usage: cli.py update <name>", file=sys.stderr)
-            sys.exit(1)
-        match = find_note_by_partial_name(sys.argv[2])
-        if match is not None:
-            new_content = input("Enter new content: ").strip()
-            update_note(match.name, new_content=new_content)
-
+        handle_update_command(rest)
     elif command == "delete":
-        if len(sys.argv) < 3:
-            print("Error: Missing name. Usage: cli.py delete <name>", file=sys.stderr)
-            sys.exit(1)
-        match = find_note_by_partial_name(sys.argv[2])
-        if match is not None:
-            delete_note(match.name)
-
+        handle_delete_command(rest)
     elif command == "search":
-        if len(sys.argv) < 3:
-            print("Error: Missing keyword. Usage: cli.py search <keyword>", file=sys.stderr)
-            sys.exit(1)
-        keyword = sys.argv[2]
-        base_dir = get_absolute_path_to_notes_home()
-        results = search_notes_by_keyword(base_dir, keyword)
-        display_search_results(results, keyword)
+        handle_search_command(rest)
+    elif command == "tags":
+        handle_tags_command(rest)
+    else:
+        print(f"Unknown command: {command}")
+        print("Use --help for usage information")
 
-    elif command == "tag":
-        if len(sys.argv) < 3:
-            print("Error: Missing tag. Usage: cli.py tag <tagname>", file=sys.stderr)
-            sys.exit(1)
-        tag = sys.argv[2]
+
+def handle_create_command(args):
+    tags_value = extract_flag_value(args, "--tags")
+    tags = [t.strip() for t in tags_value.split(",") if t.strip()] if tags_value else None
+
+    title = input("Enter note title: ").strip()
+    if not title:
+        print("Error: Title cannot be empty")
+        return
+
+    if "--editor" in args:
+        content = read_content_via_editor()
+    else:
+        content = read_multiline_content()
+
+    create_note(title, content, tags=tags)
+
+
+def handle_list_command(args):
+    tag_filter = extract_flag_value(args, "--tag")
+
+    if tag_filter is not None:
         base_dir = get_absolute_path_to_notes_home()
-        results = filter_notes_by_tag(base_dir, tag)
+        results = filter_notes_by_tag(base_dir, tag_filter)
         if not results:
-            print(f"No notes tagged '{tag}'")
+            print(f"No notes tagged '{tag_filter}'")
         else:
-            print(f"Notes tagged '{tag}':")
+            print(f"Notes tagged with '{tag_filter}':")
             for path, note in results:
                 print(f"  {path.name}: {note.title}")
-
-    elif command == "tags":
-        base_dir = get_absolute_path_to_notes_home()
-        all_tags = get_all_tags(base_dir)
-        if not all_tags:
-            print("No tags found.")
-        else:
-            print("All tags:")
-            for tag in all_tags:
-                print(f"  - {tag}")
-
     else:
-        print(f"Error: Unknown command '{command}'", file=sys.stderr)
-        show_help()
+        display_notes_list(list_all_notes())
+
+
+def handle_read_command(args):
+    if len(args) < 1:
+        print("Error: Please specify a filename")
+        print("Usage: notes read <name>")
+        return
+
+    match = find_note_by_partial_name(args[0])
+    if match is not None:
+        read_note_by_filename(match.name)
+
+
+def handle_update_command(args):
+    if len(args) < 1:
+        print("Error: Please specify a filename")
+        print("Usage: notes update <name>")
+        return
+
+    match = find_note_by_partial_name(args[0])
+    if match is not None:
+        new_content = read_multiline_content()
+        update_note(match.name, new_content=new_content)
+
+
+def handle_delete_command(args):
+    if len(args) < 1:
+        print("Error: Please specify a filename")
+        print("Usage: notes delete <name>")
+        return
+
+    match = find_note_by_partial_name(args[0])
+    if match is not None:
+        delete_note(match.name)
+
+
+def handle_search_command(args):
+    if len(args) < 1:
+        print("Error: Please specify a search keyword")
+        print("Usage: notes search <keyword>")
+        return
+
+    keyword = args[0]
+    base_dir = get_absolute_path_to_notes_home()
+    results = search_notes_by_keyword(base_dir, keyword)
+    display_search_results(results, keyword)
+
+
+def handle_tags_command(args):
+    base_dir = get_absolute_path_to_notes_home()
+    all_tags = get_all_tags(base_dir)
+
+    if not all_tags:
+        print("No tags found.")
+    else:
+        print("All tags:")
+        for tag in all_tags:
+            print(f"  - {tag}")
+
+
+def main():
+    ensure_notes_directory_exists()
+
+    args = sys.argv[1:]
+
+    try:
+        parse_command_line_arguments(args)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Use --help for usage information", file=sys.stderr)
         sys.exit(1)
 
 
