@@ -36,11 +36,18 @@ def read_multiline_content():
     content = sys.stdin.read()
     return content.strip()
 
-def read_content_via_editor():
-    """Open the user's editor on a temp file, then read back what they wrote."""
+
+def read_content_via_editor(initial_content=None):
+    """
+    Open the user's editor on a temp file, then read back what they wrote.
+    If initial_content is given, the temp file is pre-populated with it so
+    the user can edit in place rather than starting from a blank file.
+    """
     editor = os.environ.get("EDITOR", "nano")
 
-    with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tf:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as tf:
+        if initial_content:
+            tf.write(initial_content)
         temp_path = tf.name
 
     try:
@@ -240,6 +247,8 @@ def handle_create_command(args):
     tags_value = extract_flag_value(args, "--tags")
     tags = [t.strip() for t in tags_value.split(",") if t.strip()] if tags_value else None
 
+    author = extract_flag_value(args, "--author") or "unknown"
+
     title = input("Enter note title: ").strip()
     if not title:
         print("Error: Title cannot be empty")
@@ -250,7 +259,7 @@ def handle_create_command(args):
     else:
         content = read_multiline_content()
 
-    create_note(title, content, tags=tags)
+    create_note(title, content, author=author, tags=tags)
 
 
 def handle_list_command(args):
@@ -283,13 +292,31 @@ def handle_read_command(args):
 def handle_update_command(args):
     if len(args) < 1:
         print("Error: Please specify a filename")
-        print("Usage: notes update <name>")
+        print("Usage: notes update <name> [--tags tag1,tag2]")
         return
 
     match = find_note_by_partial_name(args[0])
-    if match is not None:
+    if match is None:
+        return
+
+    existing_note = load_note(match)
+
+    tags_value = extract_flag_value(args, "--tags")
+    new_tags = [t.strip() for t in tags_value.split(",") if t.strip()] if tags_value else None
+
+    if "--editor" in args:
+        # Pre-populate the editor with the existing content so the user
+        # edits in place instead of retyping everything from scratch.
+        new_content = read_content_via_editor(initial_content=existing_note.content)
+    else:
+        print("Current content:")
+        print("-" * 50)
+        print(existing_note.content)
+        print("-" * 50)
+        print()
         new_content = read_multiline_content()
-        update_note(match.name, new_content=new_content)
+
+    update_note(match.name, new_content=new_content, new_tags=new_tags)
 
 
 def handle_delete_command(args):
